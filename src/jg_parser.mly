@@ -51,6 +51,7 @@
 %token DEFAULT
 %token ENDSWITCH
 
+%token FATARROW
 %token <int> INT
 %token <float> FLOAT
 %token <string> STRING
@@ -86,6 +87,7 @@
 %token DOT
 %token VLINE
 
+%right FATARROW
 %left OR
 %left AND
 %nonassoc IS IN
@@ -113,19 +115,50 @@ input: stmt* EOF { $1 }
 
 %inline alias: IDENT preceded(AS, IDENT)? { ($1, $2) }
 
+%inline set_operator: PLUS { PLUS } | MINUS { MINUS } | DIV { DIV } | TIMES { TIMES } | MOD { MOD }
+
+
 stmt:
 | OPEN_EXPRESSION expr CLOSE_EXPRESSION { pel "expand expr"; ExpandStatement($2) }
-| SET ident DOT IDENT EQ expr { pel "set"; SetStatement (DotExpr ($2, $4), $6) }
-| SET ident preceded (COMMA, ident)* EQ expr {
-      pel "set";
-      match $2 :: $3, $5 with
-      | [ IdentExpr n ], ApplyExpr (IdentExpr "namespace", init) ->
-         let extract_assign = function
-           | (Some n, v) -> (n, v)
-           | _ -> assert false in
-         NamespaceStatement (n, List.map extract_assign init)
-      | idents, exprs -> pel "set sts"; SetStatement (SetExpr idents, exprs)
-    }
+| SET ident DOT IDENT set_operator? EQ expr
+  { pel "set";
+    let k = DotExpr ($2, $4) in
+    match $5 with
+    | None -> SetStatement (k, $7)
+    | Some PLUS -> SetStatement (k, PlusOpExpr(k, $7))
+    | Some MINUS -> SetStatement (k, MinusOpExpr(k, $7))
+    | Some TIMES -> SetStatement (k, TimesOpExpr(k, $7))
+    | Some DIV -> SetStatement (k, DivOpExpr(k, $7))
+    | Some MOD -> SetStatement (k, ModOpExpr(k, $7))
+    | Some _ -> assert false
+  }
+| SET ident preceded (COMMA, ident)* set_operator? EQ expr
+  {
+    pel "set";
+    match $2 :: $3, $6 with
+    | [ IdentExpr n ], ApplyExpr (IdentExpr "namespace", init) ->
+       assert ($4 = None) ;
+       let extract_assign = function
+         | (Some n, v) -> (n, v)
+         | _ -> assert false in
+       NamespaceStatement (n, List.map extract_assign init)
+    | [ id ], expr ->
+       begin
+         let k = SetExpr [ id ] in
+         match $4 with
+         | None -> SetStatement (k, expr)
+         | Some PLUS -> SetStatement (k, PlusOpExpr(id, expr))
+         | Some MINUS -> SetStatement (k, MinusOpExpr(id, expr))
+         | Some TIMES -> SetStatement (k, TimesOpExpr(id, expr))
+         | Some DIV -> SetStatement (k, DivOpExpr(id, expr))
+         | Some MOD -> SetStatement (k, ModOpExpr(id, expr))
+         | Some _ -> assert false
+       end
+    | idents, exprs ->
+       assert ($4 = None) ;
+       pel "set sts";
+       SetStatement (SetExpr idents, exprs)
+  }
 | EXTENDS STRING { pel "extends sts"; ExtendsStatement($2) }
 | BLOCK IDENT stmt* ENDBLOCK { pel "block sts2"; BlockStatement($2, $3) }
 | FILTER IDENT stmt* ENDFILTER { pel "filter sts"; FilterStatement($2, $3) }
@@ -222,6 +255,15 @@ expr:
 | expr LPAREN separated_list(COMMA, argument_application) RPAREN { pel "apply(expr_list)"; ApplyExpr($1, $3) }
 | LPAREN separated_list(COMMA, expr) RPAREN
   { pel "set expr"; match $2 with [ e ] -> e | _ -> SetExpr $2 }
+| expr FATARROW expr
+  { pel "fat arrow";
+    let args = match $1 with
+      | IdentExpr i -> [ i ]
+      | SetExpr set -> List.map (function IdentExpr i -> i | _ -> assert false) set
+      | _ -> assert false
+    in
+    FunctionExpression(args, $3)
+}
 ;
 
 opt_args:
